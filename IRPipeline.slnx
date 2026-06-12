@@ -1,0 +1,8 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="IRPipelineCore/IRPipelineCore.vcxproj" />
+  <Project Path="IRPipelineLib/IRPipelineLib.vcxproj" />
+  <Project Path="IRPipelineTest/IRPipelineTest.vcxproj" />
+</Solution>

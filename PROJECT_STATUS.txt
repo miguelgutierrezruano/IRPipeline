@@ -1,6 +1,6 @@
 ================================================================================
   IRPipeline - Implementation Status Report
-  Generated: 2026-06-12
+  Updated: 2026-06-12
 ================================================================================
 
 PROJECT OVERVIEW
@@ -18,7 +18,11 @@ SOLUTION STRUCTURE (Visual Studio 2022, MSVC v143, C++17, x64 only)
   |
   |-- shared/
   |   |-- include/ir_pipeline.h          Stable C ABI header
-  |   +-- third_party/stb_image_write.h  PNG output (public domain)
+  |   |-- third_party/
+  |   |   |-- stb_image.h               JPEG/PNG loading (public domain)
+  |   |   +-- stb_image_write.h         PNG output (public domain)
+  |   +-- resources/
+  |       +-- FLIR5292_*.jpg             Reference FLIR thermal images
   |
   |-- IRPipelineCore/  (Static Library, .lib)
   |   +-- src/ir_pipeline.cpp            Full pipeline implementation
@@ -27,7 +31,7 @@ SOLUTION STRUCTURE (Visual Studio 2022, MSVC v143, C++17, x64 only)
   |   +-- src/ir_pipeline_dll.cpp        Thin C ABI shim, wraps Core
   |
   +-- IRPipelineTest/  (Executable, .exe)
-      +-- main.cpp                       Standalone test harness
+      +-- main.cpp                       Test harness with FLIR input
 
 
 BUILD CHAIN
@@ -158,16 +162,32 @@ INTERNAL STATE (per IRPipeline instance)
 TEST HARNESS (IRPipelineTest/main.cpp)
 --------------------------------------
 
-  - Generates synthetic radiance scene: horizontal gradient [0.1..0.9]
-    with a quadratic hot spot (radius ~8% of min dimension)
-  - Resolution: 640 x 480
-  - Runs 5 frames (exercises temporal IIR warm-up)
-  - Prints per-frame timing (ms and fps)
-  - Writes output_rgba.png (colormapped display image)
-  - Writes output_raw.png (raw DN normalized to 8-bit grayscale for viz)
+  Input:
+    - Loads FLIR raw thermal JPEG (FLIR5292_rawthermal.jpg)
+    - Reference image: dim sum table, temp range 23.1 C to 60.0 C
+    - Path resolved relative to exe location (works from any working dir)
 
-  Measured performance (Debug build, single-threaded, 640x480):
-    ~50-57 ms/frame, ~18 fps
+  Radiance reconstruction (reverse engineering from FLIR image):
+    1. Pixel luminance (Rec.709) -> linear temperature mapping [23.1, 60.0] C
+    2. Temperature -> Planck band-integrated radiance (8-14 um)
+       - Numerical integration (trapezoidal, 120 steps)
+       - Output range: ~51.8 to ~86.9 W/(m^2 sr)
+    3. Auto-fit calibration: a0, a1 set so [L_min, L_max] -> [0, dn_max]
+
+  Pipeline config for FLIR test:
+    - Colormap:  IRONBOW (matches FLIR palette)
+    - PSF sigma: 0.8 px
+    - Tau:       1.5 frames
+    - NETD:      8.0 DN
+    - FPN gain:  0.015 sigma, offset: 3.0 sigma
+
+  Outputs (3 PNG files):
+    - output_radiance.png : reconstructed radiance field (grayscale)
+    - output_rgba.png     : pipeline display output (ironbow colormap)
+    - output_raw.png      : raw DN pre-AGC (grayscale)
+
+  Measured performance (Debug build, single-threaded, 320x240):
+    ~12-13 ms/frame, ~75 fps
 
 ================================================================================
 

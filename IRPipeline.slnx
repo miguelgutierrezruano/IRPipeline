@@ -2,7 +2,7 @@
   <Configurations>
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="IRPipelineCore/IRPipelineCore.vcxproj" />
-  <Project Path="IRPipelineLib/IRPipelineLib.vcxproj" />
-  <Project Path="IRPipelineTest/IRPipelineTest.vcxproj" />
+  <Project Path="IRPipelineCore/IRPipelineCore.vcxproj" Id="a1b2c3d4-0001-4000-8000-000000000001" />
+  <Project Path="IRPipelineLib/IRPipelineLib.vcxproj" Id="38c9f23d-b96f-44c6-8c69-02381dd41386" />
+  <Project Path="IRPipelineTest/IRPipelineTest.vcxproj" Id="3e3c057b-d0f5-4f8a-b577-9a155134838c" />
 </Solution>

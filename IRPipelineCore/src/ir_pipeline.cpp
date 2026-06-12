@@ -219,10 +219,9 @@ static void agc_linear_minmax(const float* src, uint8_t* dst, uint32_t n)
 {
     float lo = src[0], hi = src[0];
 
-    #pragma omp parallel for reduction(min:lo) reduction(max:hi)
-    for (int i = 0; i < static_cast<int>(n); ++i) {
-        lo = std::min(lo, src[i]);
-        hi = std::max(hi, src[i]);
+    for (uint32_t i = 1; i < n; ++i) {
+        if (src[i] < lo) lo = src[i];
+        if (src[i] > hi) hi = src[i];
     }
 
     float range = hi - lo;

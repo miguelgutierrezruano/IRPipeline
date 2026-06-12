@@ -5,16 +5,16 @@
  * pipeline, writes output PNG(s) and prints per-frame timing.
  */
 
-#define IR_PIPELINE_DLL
 #include "ir_pipeline.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cmath>
-#include <chrono>
 #include <vector>
 
 /* ---------------------------------------------------------------------- */

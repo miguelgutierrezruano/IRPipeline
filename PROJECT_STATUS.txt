@@ -1,0 +1,212 @@
+================================================================================
+  IRPipeline - Implementation Status Report
+  Generated: 2026-06-12
+================================================================================
+
+PROJECT OVERVIEW
+----------------
+  Physically-based LWIR (8-14 um) uncooled microbolometer camera simulation.
+  Academic project (TFM / Master's thesis) at UTAD.
+  Target: real-time integration with Unreal Engine 5.
+
+================================================================================
+
+SOLUTION STRUCTURE (Visual Studio 2022, MSVC v143, C++17, x64 only)
+-------------------------------------------------------------------
+
+  IRPipeline.slnx
+  |
+  |-- shared/
+  |   |-- include/ir_pipeline.h          Stable C ABI header
+  |   +-- third_party/stb_image_write.h  PNG output (public domain)
+  |
+  |-- IRPipelineCore/  (Static Library, .lib)
+  |   +-- src/ir_pipeline.cpp            Full pipeline implementation
+  |
+  |-- IRPipelineLib/   (Dynamic Library, .dll)
+  |   +-- src/ir_pipeline_dll.cpp        Thin C ABI shim, wraps Core
+  |
+  +-- IRPipelineTest/  (Executable, .exe)
+      +-- main.cpp                       Standalone test harness
+
+
+BUILD CHAIN
+-----------
+  IRPipelineCore.lib  -->  IRPipelineLib.dll  -->  IRPipelineTest.exe
+       (static)         (links via /WHOLEARCHIVE)    (links import lib)
+
+  - Core compiled with IR_PIPELINE_BUILD so dllexport directives embed
+    in .obj files; /WHOLEARCHIVE forces them into the DLL link.
+  - Test links IRPipelineLib.lib (import library), uses IR_PIPELINE_DLL.
+  - UE plugin will link IRPipelineCore.lib directly (no DLL, no CRT mismatch).
+
+================================================================================
+
+C ABI CONTRACT (ir_pipeline.h)
+------------------------------
+
+  ABI version:  IR_ABI_VERSION = 1
+
+  Types:
+    IRStatus      enum  (IR_OK, IR_ERR_NULL_INPUT, IR_ERR_BAD_CONFIG,
+                         IR_ERR_ABI_MISMATCH, IR_ERR_NO_OUTPUT)
+    IRAgcMode     enum  (IR_AGC_LINEAR_MINMAX, IR_AGC_PLATEAU_EQ)
+    IRColormap    enum  (IR_CMAP_WHITE_HOT, IR_CMAP_BLACK_HOT, IR_CMAP_IRONBOW)
+    IRConfig      struct with all pipeline parameters + version guard
+    IRPipeline    opaque handle (forward-declared struct)
+
+  Functions:
+    IRPipeline*  ir_create(const IRConfig* config)
+    IRStatus     ir_process(IRPipeline*, const float* radiance_in,
+                            uint8_t* rgba_out, float* raw_out)
+    void         ir_destroy(IRPipeline* pipeline)
+    IRConfig     ir_default_config(uint32_t width, uint32_t height)
+
+  Design rules:
+    - Pure C interface (extern "C"), stable across MSVC versions
+    - Opaque handle owns all per-camera state
+    - Caller owns all buffers; library never allocates for caller
+    - Both output pointers nullable (skip unused paths)
+    - ABI version checked in ir_create, returns nullptr on mismatch
+
+================================================================================
+
+PIPELINE STAGES (all implemented in ir_pipeline.cpp)
+----------------------------------------------------
+
+  Stage 0: Spectral band collapse
+    Status:   PLACEHOLDER
+    Detail:   Passes through for bands == 1 (band-integrated input).
+
+  Stage 1: PSF / MTF blur
+    Status:   IMPLEMENTED
+    Detail:   Separable Gaussian blur (horizontal + vertical passes).
+              Kernel built from psf_sigma at creation time.
+              OpenMP parallelized.
+    Default:  sigma = 1.2 px
+
+  Stage 2: Radiometric calibration (L -> DN)
+    Status:   IMPLEMENTED
+    Detail:   DN = a0 + a1*L + a2*L^2 (quadratic, per Meribout 2019).
+              OpenMP parallelized.
+    Default:  a0=0, a1=16383, a2=0 (linear, maps [0,1] to ~14-bit DN)
+
+  Stage 3: Detector thermal lag
+    Status:   IMPLEMENTED
+    Detail:   1st-order IIR low-pass per pixel.
+              S_t[n] = alpha * S[n] + (1-alpha) * S_t[n-1]
+              alpha = 1 / (1 + tau_frames)
+              First frame seeds the IIR buffer (no warm-up artifact).
+              OpenMP parallelized.
+    Default:  tau_frames = 2.0
+
+  Stage 4: Residual fixed-pattern noise (FPN)
+    Status:   IMPLEMENTED
+    Detail:   Per-pixel gain and offset maps generated from seed at creation.
+              D = S_t * gain_map + offset_map
+              gain ~ N(1.0, fpn_gain_sigma)
+              offset ~ N(0.0, fpn_offset_sigma)
+              Maps are static per camera instance.
+              OpenMP parallelized.
+    Default:  gain_sigma=0.02, offset_sigma=5.0, seed=42
+
+  Stage 5: Read noise
+    Status:   IMPLEMENTED (known bottleneck)
+    Detail:   Additive Gaussian noise N(0, netd_dn) per pixel.
+              Uses std::mt19937 + std::normal_distribution.
+              NOT parallelized (mt19937 is not thread-safe).
+              ~31 ms of ~82 ms at 1080p -- highest priority optimization.
+    Default:  netd_dn=10.0, seed=123
+    TODO:     Replace with counter-based PRNG (Philox / xorshift128+)
+
+  Stage 6: Clamp
+    Status:   IMPLEMENTED
+    Detail:   Clamp to [0, dn_max]. OpenMP parallelized.
+    Default:  dn_max = 16383.0
+
+  ---- raw_out tapped HERE (calibrated DN, pre-AGC, radiometric) ----
+
+  Stage 7: AGC (Automatic Gain Control)
+    Status:   IMPLEMENTED (2 modes)
+    Mode A:   Linear min/max stretch -> 8-bit
+    Mode B:   Plateau histogram equalization (256 bins, clip at plateau_pct)
+    Default:  IR_AGC_LINEAR_MINMAX, plateau_pct=5.0%
+
+  Stage 8: Colormap -> RGBA
+    Status:   IMPLEMENTED (3 palettes)
+    Palettes: WHITE_HOT (grayscale), BLACK_HOT (inverted), IRONBOW (cold-blue
+              to hot-yellow/white, simplified 3-segment LUT)
+              OpenMP parallelized.
+    Default:  IR_CMAP_WHITE_HOT
+
+================================================================================
+
+INTERNAL STATE (per IRPipeline instance)
+----------------------------------------
+
+  - IRConfig copy
+  - npixels (width * height, cached)
+  - frame_count
+  - psf_kernel (1-D Gaussian, precomputed)
+  - s_prev (temporal IIR buffer, npixels floats)
+  - fpn_gain, fpn_offset (per-pixel maps, generated from seed)
+  - noise_rng (std::mt19937, seeded from config)
+  - buf_a, buf_b (scratch buffers, reused per frame)
+
+================================================================================
+
+TEST HARNESS (IRPipelineTest/main.cpp)
+--------------------------------------
+
+  - Generates synthetic radiance scene: horizontal gradient [0.1..0.9]
+    with a quadratic hot spot (radius ~8% of min dimension)
+  - Resolution: 640 x 480
+  - Runs 5 frames (exercises temporal IIR warm-up)
+  - Prints per-frame timing (ms and fps)
+  - Writes output_rgba.png (colormapped display image)
+  - Writes output_raw.png (raw DN normalized to 8-bit grayscale for viz)
+
+  Measured performance (Debug build, single-threaded, 640x480):
+    ~50-57 ms/frame, ~18 fps
+
+================================================================================
+
+VCXPROJ SETTINGS SUMMARY
+-------------------------
+
+  All projects:  C++17, /MD (Release) /MDd (Debug), x64 only, v143 toolset
+
+  IRPipelineCore (.lib):
+    - Preprocessor:  IR_PIPELINE_BUILD
+    - OpenMP:        /openmp
+    - Includes:      $(SolutionDir)shared\include
+
+  IRPipelineLib (.dll):
+    - Preprocessor:  IR_PIPELINE_BUILD
+    - OpenMP:        /openmp
+    - Includes:      $(SolutionDir)shared\include
+    - Linker:        IRPipelineCore.lib, /WHOLEARCHIVE:IRPipelineCore.lib
+    - References:    IRPipelineCore (build order)
+
+  IRPipelineTest (.exe):
+    - Preprocessor:  IR_PIPELINE_DLL, _CRT_SECURE_NO_WARNINGS
+    - Includes:      $(SolutionDir)shared\include; $(SolutionDir)shared\third_party
+    - Linker:        IRPipelineLib.lib
+    - References:    IRPipelineLib (build order)
+
+================================================================================
+
+NOT YET IMPLEMENTED
+-------------------
+
+  [ ] Counter-based PRNG for read noise (replace mt19937)
+  [ ] Electrothermal bolometer model (Saxena 2011)
+  [ ] Spectral band integration with Planck weights (stage 0)
+  [ ] Dynamic FPN drift with FPA temperature (Wolf 2016)
+  [ ] Full MTF model (Adams & Strickland 2023)
+  [ ] Shutter-based NUC correction (Nugent 2014)
+  [ ] Inverse calibration LUT for apparent-temperature output
+  [ ] IRPipelineValidator project (per-stage unit tests)
+  [ ] UE plugin scaffold
+
+================================================================================
